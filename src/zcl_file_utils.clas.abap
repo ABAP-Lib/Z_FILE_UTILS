@@ -19,6 +19,52 @@ public section.
   type-pools ABAP .
 
     class-methods:
+
+        copy_table_to_table
+            importing
+                it_from type table
+            changing
+                ct_to type table,
+
+        read_binary_file_to_xstring
+            importing
+                iv_arquivo type csequence
+                iv_local type abap_bool
+            returning
+                value(rv_result) type xstring
+            raising
+                zcx_file_error,
+
+        binary_tab_to_xstring
+            IMPORTING
+                iv_INPUT_LENGTH TYPE I
+                it_BINARY_TAB TYPE STANDARD TABLE
+            returning
+                value(rv_result) type xstring
+            raising
+                zcx_file_error,
+
+        xstring_xlsx_to_tab
+            importing
+                iv_content type xstring
+            changing
+                ct_dados type table
+            raising
+                CX_FDT_EXCEL_CORE
+                CX_UUID_ERROR,
+
+        get_dados_arquivo_xlsx
+            importing
+                iv_arquivo type csequence
+                iv_local type abap_bool
+            changing
+                ct_dados type table
+            raising
+                zcx_file_error
+                CX_FDT_EXCEL_CORE
+                CX_UUID_ERROR.
+
+    class-methods:
         add_slash_at_end
             importing
                 iv_path type csequence
@@ -54,7 +100,7 @@ public section.
   class-methods VALIDAR_ARCHIVO
     importing
       !IV_ARCHIVO type C
-      !IV_TIPO_MENSAJE_BATCH type BAPI_MTYPE default 'S'
+      iv_local type abap_bool
     returning
       value(EV_EXISTE) type ABAP_BOOL .
   class-methods VALIDATE_PATH
@@ -85,8 +131,11 @@ public section.
   class-methods GET_DATOS_ARCHIVO_TEXTO
     importing
       !IV_ARCHIVO type CSEQUENCE
+      iv_local type abap_bool
     changing
-      !ET_DATOS type TABLE .
+      !ET_DATOS type TABLE
+    raising
+        zcx_file_error.
   class-methods GET_DATOS_ARCHIVO_XLS
     importing
       !IV_ARCHIVO type C
@@ -579,11 +628,11 @@ CLASS ZCL_FILE_UTILS IMPLEMENTATION.
         LV_BYTES_LEIDOS TYPE I,
         LV_ARCHIVO TYPE STRING.
 
-*     Se verifica si el proceso es de fondo
-      IF SY-BATCH EQ 'X'.
+*     Se verifica si es del servidor
+      IF not iv_local eq abap_true.
 
 *     Apertura de archivo.
-        OPEN DATASET IV_ARCHIVO FOR INPUT IN LEGACY TEXT MODE CODE PAGE '1160'.
+        OPEN DATASET IV_ARCHIVO FOR INPUT in text mode encoding default.
 
 *     Verifica algún error con la apertura del archivo.
         CHECK SY-SUBRC EQ 0.
@@ -657,8 +706,7 @@ CLASS ZCL_FILE_UTILS IMPLEMENTATION.
             others                  = 19
                 .
         IF SY-SUBRC <> 0.
-          MESSAGE ID SY-MSGID TYPE SY-MSGTY NUMBER SY-MSGNO
-                     WITH SY-MSGV1 SY-MSGV2 SY-MSGV3 SY-MSGV4.
+            raise exception type zcx_file_error.
         ENDIF.
 
       ENDIF.
@@ -894,6 +942,9 @@ CLASS ZCL_FILE_UTILS IMPLEMENTATION.
       DATA:
         LT_PARTES_ARCHIVO TYPE STRINGTAB,
         LV_LINEAS TYPE I.
+
+      data(lv_archivo) = IV_ARCHIVO.
+      translate lv_archivo using '/\'.
 
       SPLIT IV_ARCHIVO AT '\' INTO TABLE LT_PARTES_ARCHIVO
         IN CHARACTER MODE.
@@ -1450,12 +1501,12 @@ CLASS ZCL_FILE_UTILS IMPLEMENTATION.
       DATA:
         LV_ARCHIVO TYPE STRING.
 
-      IF SY-BATCH IS INITIAL.
+      IF iv_local eq abap_true.
 
         LV_ARCHIVO = IV_ARCHIVO.
 
         IF IV_ARCHIVO IS INITIAL.
-          MESSAGE E078(ZFI00).
+          message 'O arquivo não deve estar vazio' type 'E'.
         ENDIF.
 
         CALL METHOD CL_GUI_FRONTEND_SERVICES=>FILE_EXIST
@@ -1473,20 +1524,14 @@ CLASS ZCL_FILE_UTILS IMPLEMENTATION.
         IF SY-SUBRC <> 0.
           MESSAGE ID SY-MSGID TYPE SY-MSGTY NUMBER SY-MSGNO
                      WITH SY-MSGV1 SY-MSGV2 SY-MSGV3 SY-MSGV4.
-        ELSE.
-          IF EV_EXISTE EQ ABAP_FALSE.
-            MESSAGE ID 'ZFI00' TYPE 'E' NUMBER 078.
-          ENDIF.
         ENDIF.
 
       ELSE.
 
         OPEN DATASET IV_ARCHIVO FOR INPUT IN TEXT MODE ENCODING DEFAULT.
 
-
         IF SY-SUBRC NE 0.
           EV_EXISTE = ABAP_FALSE.
-          MESSAGE ID 'ZFI00' TYPE IV_TIPO_MENSAJE_BATCH NUMBER 078.
         ELSE.
           EV_EXISTE = ABAP_TRUE.
           CLOSE DATASET IV_ARCHIVO.
@@ -1563,4 +1608,146 @@ CLASS ZCL_FILE_UTILS IMPLEMENTATION.
       MESSAGE 'La ruta es inexistente' TYPE 'E'.
 
     endmethod.
+
+    method read_binary_file_to_xstring.
+
+        if iv_local eq abap_true.
+
+            types:
+                ty_v_binary_line(256) type x.
+
+            data:
+                lt_binary_tab type standard table of ty_v_binary_line,
+                lv_length type i.
+
+            GET_DATOS_ARCHIVO_BINARIO(
+              exporting
+                IV_ARCHIVO = iv_arquivo
+              changing
+                ET_DATOS   = lt_binary_tab
+                EV_TAMANIO = lv_length
+            ).
+
+            rv_result = BINARY_TAB_TO_XSTRING(
+                IV_INPUT_LENGTH = lv_length
+                IT_BINARY_TAB   = lt_binary_tab
+            ).
+
+        else.
+
+            open dataset iv_arquivo in binary mode for input.
+
+            read dataset iv_arquivo into rv_result.
+
+            close dataset iv_arquivo.
+
+        endif.
+
+    endmethod.
+
+    method binary_tab_to_xstring.
+
+        call function 'SCMS_BINARY_TO_XSTRING'
+          exporting
+            INPUT_LENGTH = iv_input_length
+*            FIRST_LINE   = 0
+*            LAST_LINE    = 0
+          importing
+            BUFFER       = rv_result
+          tables
+            BINARY_TAB   = it_binary_tab
+          exceptions
+            FAILED       = 1
+            OTHERS       = 2
+          .
+
+        if sy-subrc <> 0.
+
+            raise exception type zcx_file_error.
+
+        endif.
+
+
+    endmethod.
+
+    method get_dados_arquivo_xlsx.
+
+        data(lv_file_content) = READ_BINARY_FILE_TO_XSTRING(
+            IV_ARQUIVO     = iv_arquivo
+            IV_LOCAL       = iv_local
+        ).
+
+        XSTRING_XLSX_TO_TAB(
+          exporting
+            IV_CONTENT        = lv_file_content
+          changing
+            CT_DADOS          = ct_dados
+        ).
+
+    endmethod.
+
+    method xstring_xlsx_to_tab.
+
+*         Crear objeto Spreadsheet document
+          DATA(lo_xlsx) = NEW cl_fdt_xl_spreadsheet(
+            document_name = CL_SYSTEM_UUID=>create_uuid_c32_static( )
+            xdocument     = iv_content
+          ).
+
+*         Obtener tabla con Hojas del Libro Excel
+          lo_xlsx->if_fdt_doc_spreadsheet~get_worksheet_names(
+            IMPORTING
+              worksheet_names = DATA(lt_excel)
+          ).
+
+*         Tomar primera hoja del Libro Excel
+          READ TABLE lt_excel INTO DATA(ls_excel) INDEX 1.
+
+*         Obtener Tabla de la primera hoja del Libro Excel
+          DATA(ir_ref) = lo_xlsx->if_fdt_doc_spreadsheet~get_itab_from_worksheet( ls_excel  ) .
+
+          field-symbols:
+              <lt_xlsx_content_tab> type table.
+
+          ASSIGN ir_ref->* TO <lt_xlsx_content_tab>.
+
+          copy_table_to_table(
+            exporting
+                it_from = <lt_xlsx_content_tab>
+            changing
+                ct_to = ct_dados
+          ).
+
+    endmethod.
+
+    method copy_table_to_table.
+
+        loop at it_from assigning field-symbol(<ls_from>).
+
+            append initial line to ct_to assigning field-symbol(<ls_to>).
+
+            do.
+
+                data(lv_index) = sy-index.
+
+                assign component lv_index of structure <ls_from> to field-symbol(<lv_from>).
+
+                if sy-subrc ne 0.
+                    exit.
+                endif.
+
+                assign component lv_index of structure <ls_to> to field-symbol(<lv_to>).
+
+                if sy-subrc ne 0.
+                    exit.
+                endif.
+
+                <lv_to> = <lv_from>.
+
+            enddo.
+
+        endloop.
+
+    endmethod.
+
 ENDCLASS.
